@@ -1,21 +1,42 @@
 
+function error(err){
+	console.error(err);
+	process.exit();
+}
+
+readline = require('readline-sync');
 Getopt = require("node-getopt");
 getopt = new Getopt([
-	["s", "=", "irc server"],
-	["c", "=", "irc channel"],
-	["p", "=", "irc channel password (optional)"],
-	["S", "=", "self listen on messenger"],
+	["i", "id=", "id of messenger conversation (REQUIRED)"],
+	["s", "server=", "irc server (REQUIRED)"],
+	["c", "channel=", "irc channel (REQUIRED) REMEMBER TO PUT IT IN THE QUOTATION MARK - # is interpreted by bash as begining of a comment"],
+	["p", "password", "authenticate on irc chanell using password"],
+	["S", "self-listen", "self listen on messenger"],
+	["P", "prefix=", "prefix in messages on irc that has to be send to messenger (by default all messages are send)"],
+	["m", "message=", "message send to messenger before message from IRC (%s is replaced by sender name)"],
+	["h", "help", "show help"]
 ]);
+opt = getopt.bindHelp().parseSystem();
 
+if(opt.options["id"] != undefined && opt.options['server'] != undefined && opt.options['channel'] != undefined){
+	var chat_id = opt.options['id'];
+	var irc_server = opt.options['server'];
+	var irc_channel = opt.options['channel'];
+}
+else {
+	getopt.showHelp();
+	process.exit();
+}
+if(opt.options['password'] == true) var irc_password = readline.question("IRC channel password: ", {hideEchoBack: true});
+if(opt.options['self-listen'] == true) var selfListen = true;
+else selfListen = false;
+if(opt.options['prefix'] != undefined) var prefix = opt.options['prefix'];
+if(opt.options['message'] != undefined) var beforeMessage = opt.options['message'];
+else var beforeMessage = "";
 
-// TODO traditional parameters parsing
-var irc_channel = process.argv[2];
-var chat_id = process.argv[3];
-if(process.argv.length > 4)
-	var irc_password = process.argv[4];
-readline = require('readline-sync');
 var fb_mail = readline.question("Facebook email: ");
 var fb_pass = readline.question("Facebook password: ", {hideEchoBack: true});
+
 
 
 function senderName(info, sender, friends){
@@ -23,44 +44,66 @@ function senderName(info, sender, friends){
 	for (i = 0; i < friends.length; i++) {
 		if(friends[i].userID == sender) return friends[i].fullName;
 	}
-	console.log(sender+" not found in friends");
-	if(info.participantIDs.indexOf(sender) != -1) return info.name;
+	if(sender == chat_id) return info.name;
 	return sender;
 }
 
 var irc = require('irc');
-// TODO other servers
+
 if(irc_password != undefined)
-	var client = new irc.Client('localhost', 'messenger-bot', {channels: [irc_channel+" "+irc_password]});
+	var client = new irc.Client(irc_server, 'messenger-bot', {channels: [irc_channel+" "+irc_password]});
 else
-	var client = new irc.Client('localhost', 'messenger-bot', {channels: [irc_channel]});
+	var client = new irc.Client(irc_server, 'messenger-bot', {channels: [irc_channel]});
+
+
 var login = require("facebook-chat-api");
 login({email: fb_mail, password: fb_pass}, function callback(err, api){
-	if(err) return console.error(err);
-	api.setOptions({listenEvents: true, selfListen: true}); // TODO selfListen as optional
+	if(err) error(err);
+	api.setOptions({selfListen: selfListen});
 	var chat_info;
 	var friends;
 	api.getThreadInfo(chat_id, function(error, info){
-		if(err) return console.error(err);
+		if(err) error(err);
 		chat_info = info;
 	});
 	api.getFriendsList(function(err, data) {
-		if(err) return console.error(err);
+		if(err) error(err);
 		friends = data;
 	});
 	api.listen(function(err, event){
-		if(err) return console.error(err);
-		switch(event.type){
-			case "message":
-				if (event.threadID == chat_id && event.body.indexOf(" on irc:\n") == -1) client.say(irc_channel, senderName(chat_info, event.senderID, friends)+": "+event.body); // TODO on irc:
-				break;
-			// TODO add more
-		};
+		if(err) error(err);
+		if(event.threadID == chat_id){
+			if (event.type == "message" && event.body != undefined)
+				client.say(irc_channel, senderName(chat_info, event.senderID, friends)+": "+event.body);
+			if(event.attachments != undefined) {
+				for(i = 0; i < event.attachments.length; i++) {
+					//if(event.attachments[i] == undefined) break; //don't know why but without it sometimes it was undefined. weird...
+					var attachment = event.attachments[i];
+					if(attachment.url != undefined) {
+						client.say(irc_channel, senderName(chat_info, event.senderID, friends)+" send an attachment: "+attachment.url);
+					}
+					else if(attachment.hiresUrl != undefined) {
+						client.say(irc_channel, senderName(chat_info, event.senderID, friends)+" send an attachment: "+attachment.hiresUrl);
+					}
+					else if(attachment.previewUrl != undefined) {
+						client.say(irc_channel, senderName(chat_info, event.senderID, friends)+" send an attachment: "+attachment.previewUrl);
+					}
+					else if(attachment.facebookUrl != undefined) {
+						var url = attachment.facebookUrl;
+						if(url.indexOf('https://') == -1 && url.indexOf('http://') == -1)
+							url = "https://facebook.com"+url;
+						client.say(irc_channel, senderName(chat_info, event.senderID, friends)+" send an attachment: "+url);
+					}
+				}
+			}
+		}
 	});
 	client.addListener('message', function (from, to, message){
-		if(message.indexOf("fb>") == 0){
-			// TODO "from on irc:" as optionally text
-			api.sendMessage(from+" on irc:\n"+message.substring(3, message.length).trim(), chat_id);
+		if(prefix == undefined){
+			api.sendMessage(beforeMessage.replace("%s", from)+message, chat_id);
+		}
+		else if (message.indexOf(prefix) == 0) {
+			api.sendMessage(beforeMessage.replace("%s", from)+message.substring(prefix.length, message.length).trim(), chat_id);
 		}
 	});
 });
